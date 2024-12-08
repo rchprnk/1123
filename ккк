@@ -1,0 +1,108 @@
+from pyrogram import Client, filters
+from datetime import datetime, timedelta
+import pytz
+import openai
+import os
+
+# Ваші API ID та HASH для Telegram
+API_ID = "24588949"
+API_HASH = "590483254d766bec4b18abdc7354d503"
+SESSION_NAME = "my_account_session"
+
+# OpenAI API ключ
+openai.api_key = os.getenv("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")  # Зберігайте API ключ в середовищі
+
+# Функція для створення підсумків
+def summarize_text(text):
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "Ты помощник, который создает краткие описания сообщений."},
+                {"role": "user", "content": f"Создай краткий отчет для текста: {text}"}
+            ]
+        )
+        return response['choices'][0]['message']['content'].strip()
+    except Exception as e:
+        print(f"Error during summarization: {e}")
+        return "Підсумок не вдалося створити."
+
+# Створення клієнта Pyrogram
+app = Client(SESSION_NAME, api_id=API_ID, api_hash=API_HASH)
+
+@app.on_message(filters.text)
+async def handle_new_messages(client, message):
+    print("Початок створення звіту...")
+    tz = pytz.timezone('Europe/Warsaw')  # Встановлюємо актуальну часову зону
+    current_time = datetime.now(tz)
+    one_day_ago = current_time - timedelta(days=1)
+
+    first_message_time = None
+    last_message_time = None
+    report = []
+    user_count = 0
+    visited_users = set()  # Множина для перевірки унікальних користувачів
+
+    # Отримуємо всі діалоги
+    async for dialog in client.get_dialogs():
+        username = dialog.chat.username
+        # Перевіряємо, чи це приватний чат і чи є текстові повідомлення
+        if not username or dialog.chat.type != "private":
+            continue
+
+        print(f"Обробляємо чат: {username}")
+        all_messages = []
+
+        try:
+            # Перевірка, чи є правильний peer_id
+            print(f"Пробую отримати повідомлення з чату @{username}")
+            messages = await client.get_messages(dialog.chat.id, limit=100)
+        except Exception as e:
+            print(f"Помилка доступу до чату @{username}: {e}")
+            continue
+
+        for msg in messages:
+            if msg.text and msg.date:
+                msg_date_aware = msg.date.replace(tzinfo=pytz.UTC)
+                if msg_date_aware >= one_day_ago:
+                    all_messages.append(msg.text)
+
+                    if first_message_time is None or msg_date_aware < first_message_time:
+                        first_message_time = msg_date_aware
+                    if last_message_time is None or msg_date_aware > last_message_time:
+                        last_message_time = msg_date_aware
+
+        if all_messages:
+            print(f"Знайдено {len(all_messages)} повідомлень для @{username}.")
+            all_messages_text = "\n".join(all_messages)
+            summary = summarize_text(all_messages_text)  # Використовуємо AI для підсумку
+            report.append(f"@{username} — итог: {summary}")
+            user_count += 1
+            visited_users.add(username)  # Додаємо користувача до множини
+        else:
+            print(f"Не знайдено повідомлень для @{username} за останні 24 години.")
+
+    start_time = first_message_time.strftime("%H:%M") if first_message_time else "Немає даних"
+    end_time = last_message_time.strftime("%H:%M") if last_message_time else "Немає даних"
+
+    # Формуємо звіт
+    full_report = f"""
+Ваш щоденний рапорт:
+
+Время начала работы: {start_time}
+Время конца работы: {end_time}
+Количество людей с которыми общались: {user_count}
+Перечень диалогов и итог:
+{chr(10).join(report)}
+
+Проблемы: Проблемы
+Оценка рабочего дня 1/10: N
+Сложности в течении дня: Сложности
+Итог рабочего дня: Итог
+"""  # Додано закриття трійних лапок
+
+    print("Generated report:", full_report)
+    await client.send_message("me", f"Ваш щоденний рапорт:\n\n{full_report}")
+
+# Запуск клієнта Pyrogram
+app.run()
